@@ -70,6 +70,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         "-Wno-sign-conversion "
         "-Wno-reserved-identifier "
         "-Wno-unknown-warning-option "
+        "-Wno-unsafe-buffer-usage "
+        "-Wno-cast-function-type-strict "
 
         # warnings that should probably be fixed in code
         "-Wno-documentation-unknown-command "
