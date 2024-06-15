@@ -87,10 +87,10 @@ Editor::is_active()
 {
   if (s_resaving_in_progress) {
     return true;
-  } else {
-    auto* self = Editor::current();
-    return self && !self->m_leveltested && self->m_after_setup;
   }
+
+  auto* self = Editor::current();
+  return self && !self->m_testing_level && self->m_after_setup;
 }
 
 Editor::Editor() :
@@ -111,8 +111,8 @@ Editor::Editor() :
   m_test_pos(),
   m_particle_editor_filename(),
   m_sector(),
-  m_levelloaded(false),
-  m_leveltested(false),
+  m_level_loaded(false),
+  m_testing_level(false),
   m_after_setup(false),
   m_tileset(nullptr),
   m_has_deprecated_tiles(false),
@@ -150,40 +150,21 @@ Editor::~Editor()
 void
 Editor::draw(Compositor& compositor)
 {
+  // Avoid drawing the sector if we're about to test it, as there is a dangling pointer
+  // issue with the PlayerStatus.
+  if(m_testing_level)
+    return;
+
   auto& context = compositor.make_context();
 
-  if (m_levelloaded) {
+  if (m_level_loaded) {
     for(const auto& widget : m_widgets) {
       widget->draw(context);
     }
 
     // If camera scale must be changed, change it here.
-    if (m_new_scale != 0.f)
-    {
-      // Do not clamp, as to prevent pointless calls to EditorOverlayWidget::update_pos().
-      if (m_new_scale >= CAMERA_MIN_ZOOM && m_new_scale <= CAMERA_MAX_ZOOM)
-      {
-        Camera& camera = m_sector->get_camera();
-        const bool zooming_in = camera.get_current_scale() < m_new_scale;
-
-        camera.set_scale(m_new_scale);
-
-        // When zooming in, focus on the position of the mouse.
-        if (zooming_in)
-          camera.move((m_mouse_pos - Vector(static_cast<float>(SCREEN_WIDTH - 128),
-                                            static_cast<float>(SCREEN_HEIGHT - 32)) / 2.f) / CAMERA_ZOOM_FOCUS_PROGRESSION);
-
-        // Update the camera's screen size variable, so it can properly be kept in sector bounds.
-        camera.draw(context);
-        keep_camera_in_bounds();
-      }
-      m_new_scale = 0.f;
-    }
-
-    // Avoid drawing the sector if we're about to test it, as there is a dangling pointer
-    // issue with the PlayerStatus.
-    if (!m_leveltested)
-      m_sector->draw(context);
+    apply_camera_scale(context);
+    m_sector->draw(context);
 
     context.color().draw_filled_rect(context.get_rect(),
                                      Color(0.0f, 0.0f, 0.0f),
@@ -201,32 +182,34 @@ void
 Editor::update(float dt_sec, const Controller& controller)
 {
   // Auto-save (interval).
-  if (m_level) {
-    m_time_since_last_save += dt_sec;
-    if (m_time_since_last_save >= static_cast<float>(std::max(
-        g_config->editor_autosave_frequency, 1)) * 60.f) {
-      m_time_since_last_save = 0.f;
-      std::string backup_filename = get_autosave_from_levelname(m_levelfile);
-      std::string directory = get_level_directory();
+  update_autosave(dt_sec);
 
-      // Set the test level file even though we're not testing, so that
-      // if the user quits the editor without ever testing, it'll delete
-      // the autosave file anyways.
-      m_autosave_levelfile = FileSystem::join(directory, backup_filename);
-      try
-      {
-        m_level->save(m_autosave_levelfile);
-      }
-      catch(const std::exception& e)
-      {
-        log_warning << "Couldn't autosave: " << e.what() << '\n';
-      }
+  handle_editor_requests();
+
+  // Update other components.
+  if (m_level_loaded && !m_testing_level) {
+    BIND_SECTOR(*m_sector);
+
+    for (auto& object : m_sector->get_objects()) {
+      object->editor_update();
     }
-  } else {
-    m_time_since_last_save = 0.f;
-  }
 
-  // Pass all requests.
+    for (const auto& widget : m_widgets) {
+      widget->update(dt_sec);
+    }
+
+    // Now that all widgets have been updated, which should have relinquished
+    // pointers to objects marked for deletion, we can actually delete them.
+    for (auto& sector : m_level->get_sectors())
+      sector->flush_game_objects();
+
+    update_keyboard(controller);
+  }
+}
+
+void
+Editor::handle_editor_requests()
+{
   if (m_reload_request) {
     reload_level();
   }
@@ -247,9 +230,6 @@ Editor::update(float dt_sec, const Controller& controller)
   if (m_save_request) {
     save_level(m_save_request_filename, m_save_request_switch);
     m_enabled = true;
-    m_save_request = false;
-    m_save_request_filename = "";
-    m_save_request_switch = false;
   }
 
   if (m_test_request) {
@@ -261,9 +241,7 @@ Editor::update(float dt_sec, const Controller& controller)
 
   if (m_particle_editor_request) {
     m_particle_editor_request = false;
-    std::unique_ptr<Screen> screen(new ParticleEditor());
-    if (m_particle_editor_filename)
-      static_cast<ParticleEditor*>(screen.get())->open("particles/" + *m_particle_editor_filename);
+    std::unique_ptr<Screen> screen(new ParticleEditor(m_particle_editor_filename));
     ScreenManager::current()->push_screen(std::move(screen));
     return;
   }
@@ -273,25 +251,46 @@ Editor::update(float dt_sec, const Controller& controller)
     m_deactivate_request = false;
     return;
   }
+}
 
-  // Update other components.
-  if (m_levelloaded && !m_leveltested) {
-    BIND_SECTOR(*m_sector);
+void
+Editor::update_autosave(float dt_sec)
+{
+  if(!m_level)
+  {
+    m_time_since_last_save = 0;
+    return;
+  }
 
-    for (auto& object : m_sector->get_objects()) {
-      object->editor_update();
-    }
+  m_time_since_last_save += dt_sec;
 
-    for (const auto& widget : m_widgets) {
-      widget->update(dt_sec);
-    }
+  float autosave_threshold = std::max(g_config->editor_autosave_frequency, 1) * 60.f;
 
-    // Now that all widgets have been updated, which should have relinquished
-    // pointers to objects marked for deletion, we can actually delete them.
-    for (auto& sector : m_level->get_sectors())
-      sector->flush_game_objects();
+  if(m_time_since_last_save < autosave_threshold)
+    return;
 
-    update_keyboard(controller);
+  autosave();
+}
+
+void
+Editor::autosave()
+{
+  m_time_since_last_save = 0.f;
+  std::string backup_filename = get_autosave_from_levelname(m_levelfile);
+  std::string directory = get_level_directory();
+
+  // Set the test level file even though we're not testing, so that
+  // if the user quits the editor without ever testing, it'll delete
+  // the autosave file anyways.
+  m_autosave_levelfile = FileSystem::join(directory, backup_filename);
+
+  try
+  {
+    m_level->save(m_autosave_levelfile);
+  }
+  catch(const std::exception& e)
+  {
+    log_warning << "Couldn't autosave: " << e.what() << '\n';
   }
 }
 
@@ -325,7 +324,13 @@ Editor::save_level(const std::string& filename, bool switch_file)
     sector->on_editor_save();
   }
   m_level->save(m_world ? FileSystem::join(m_world->get_basedir(), file) : file);
+
   m_time_since_last_save = 0.f;
+
+  m_save_request = false;
+  m_save_request_filename = "";
+  m_save_request_switch = false;
+
   remove_autosave_file();
 }
 
@@ -351,6 +356,7 @@ Editor::get_level_directory() const
 void
 Editor::test_level(const std::optional<std::pair<std::string, Vector>>& test_pos)
 {
+  m_testing_level = true;
   m_overlay_widget->reset_action_press();
 
   Tile::draw_editor_images = false;
@@ -367,10 +373,7 @@ Editor::test_level(const std::optional<std::pair<std::string, Vector>>& test_pos
     current_world = owned_world.get();
   }
 
-  m_autosave_levelfile = FileSystem::join(directory, backup_filename);
-  m_level->save(m_autosave_levelfile);
-  m_time_since_last_save = 0.f;
-  m_leveltested = true;
+  autosave();
 
   if (!m_level->is_worldmap())
   {
@@ -411,10 +414,37 @@ Editor::get_tileselect_move_mode() const
 void
 Editor::scroll(const Vector& velocity)
 {
-  if (!m_levelloaded) return;
+  if (!m_level_loaded) return;
 
   m_sector->get_camera().move(velocity / m_sector->get_camera().get_current_scale());
   keep_camera_in_bounds();
+}
+
+void
+Editor::apply_camera_scale(DrawingContext& context)
+{
+  if (m_new_scale == 0.0f)
+    return;
+
+  // Do not clamp, as to prevent pointless calls to EditorOverlayWidget::update_pos().
+  if (m_new_scale >= CAMERA_MIN_ZOOM && m_new_scale <= CAMERA_MAX_ZOOM)
+  {
+    Camera& camera = m_sector->get_camera();
+    const bool zooming_in = camera.get_current_scale() < m_new_scale;
+
+    camera.set_scale(m_new_scale);
+
+    // When zooming in, focus on the position of the mouse.
+    if (zooming_in)
+      camera.move((m_mouse_pos - Vector(static_cast<float>(SCREEN_WIDTH - 128),
+                                        static_cast<float>(SCREEN_HEIGHT - 32)) / 2.f) / CAMERA_ZOOM_FOCUS_PROGRESSION);
+
+    // Update the camera's screen size variable, so it can properly be kept in sector bounds.
+    camera.draw(context);
+    keep_camera_in_bounds();
+  }
+
+  m_new_scale = 0.f;
 }
 
 void
@@ -544,7 +574,7 @@ Editor::set_level(std::unique_ptr<Level> level, bool reset)
 
   // Reload level.
   m_level = nullptr;
-  m_levelloaded = true;
+  m_level_loaded = true;
 
   m_level = std::move(level);
 
@@ -614,7 +644,7 @@ Editor::quit_editor()
     // Quit level editor.
     m_world = nullptr;
     m_levelfile = "";
-    m_levelloaded = false;
+    m_level_loaded = false;
     m_enabled = false;
     Tile::draw_editor_images = false;
     ScreenManager::current()->pop_screen();
@@ -635,7 +665,7 @@ Editor::quit_editor()
 void
 Editor::check_unsaved_changes(const std::function<void ()>& action)
 {
-  if (!m_levelloaded)
+  if (!m_level_loaded)
   {
     action();
     return;
@@ -789,7 +819,7 @@ Editor::setup()
   Tile::draw_editor_images = true;
   Sector::s_draw_solids_only = false;
   m_after_setup = true;
-  if (!m_levelloaded) {
+  if (!m_level_loaded) {
 
 #if 0
     if (AddonManager::current()->is_old_addon_enabled()) {
@@ -821,8 +851,8 @@ Editor::setup()
   m_layers_widget->setup();
 
   // Reactivate the editor after level test.
-  if (m_leveltested) {
-    m_leveltested = false;
+  if (m_testing_level) {
+    m_testing_level = false;
     Tile::draw_editor_images = true;
     m_level->reactivate();
 
@@ -1011,23 +1041,18 @@ Editor::check_save_prerequisites(const std::function<void ()>& callback) const
     }
   }
 
-  if(sector_valid && spawnpoint_valid)
+  if (!sector_valid)
   {
-    callback();
-    return;
+    Dialog::show_message(_("Couldn't find a \"main\" sector.\nPlease change the name of the sector where\nyou'd like the player to start to \"main\""));
+  }
+  else if (!spawnpoint_valid)
+  {
+    Dialog::show_message(_("Couldn't find a \"main\" spawnpoint.\n Please change the name of the spawnpoint where\nyou'd like the player to start to \"main\""));
   }
   else
   {
-    if (!sector_valid)
-    {
-      Dialog::show_message(_("Couldn't find a \"main\" sector.\nPlease change the name of the sector where\nyou'd like the player to start to \"main\""));
-    }
-    else if (!spawnpoint_valid)
-    {
-      Dialog::show_message(_("Couldn't find a \"main\" spawnpoint.\n Please change the name of the spawnpoint where\nyou'd like the player to start to \"main\""));
-    }
+    callback();
   }
-
 }
 
 void
@@ -1052,9 +1077,9 @@ Editor::retoggle_undo_tracking()
     // Remove undo/redo button widgets.
     m_widgets.erase(std::remove_if(
                       m_widgets.begin(), m_widgets.end(),
-                      [this](const std::unique_ptr<Widget>& widget) {
-                          const Widget* ptr = widget.get();
-                          return ptr == m_undo_widget || ptr == m_redo_widget;
+                      [this](const auto& widget) {
+                        return widget.get() == m_undo_widget ||
+                               widget.get() == m_redo_widget;
                       }), m_widgets.end());
     m_undo_widget = nullptr;
     m_redo_widget = nullptr;

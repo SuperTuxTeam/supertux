@@ -114,8 +114,17 @@ public:
 
   void open_level_directory();
 
-  bool is_testing_level() const { return m_leveltested; }
+  bool is_testing_level() const { return m_testing_level; }
 
+  /**
+   * Check if current level needs to be auto-saved
+   * @param dt_sec Elapsed seconds
+   */
+  void update_autosave(float dt_sec);
+  /**
+   * Auto-save level
+   */
+  void autosave();
   void remove_autosave_file();
 
   /** Convert tiles on every tilemap in the level, according to a tile conversion file. */
@@ -147,7 +156,7 @@ public:
 
   void scroll(const Vector& velocity);
 
-  bool is_level_loaded() const { return m_levelloaded; }
+  bool is_level_loaded() const { return m_level_loaded; }
 
   void edit_path(PathGameObject* path, GameObject* new_marked_object) {
     m_overlay_widget->edit_path(path, new_marked_object);
@@ -181,7 +190,9 @@ private:
   void save_level(const std::string& filename = "", bool switch_file = false);
   void test_level(const std::optional<std::pair<std::string, Vector>>& test_pos);
   void update_keyboard(const Controller& controller);
+  void handle_editor_requests();
 
+  void apply_camera_scale(DrawingContext& context);
   void keep_camera_in_bounds();
 
   void post_undo_redo_actions();
@@ -211,8 +222,8 @@ public:
 private:
   Sector* m_sector;
 
-  bool m_levelloaded;
-  bool m_leveltested;
+  bool m_level_loaded;
+  bool m_testing_level;
   bool m_after_setup; // Set to true after setup function finishes and to false after leave function finishes
 
   TileSet* m_tileset;
