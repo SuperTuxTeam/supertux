@@ -25,5 +25,12 @@
     (hitbox 0 0 48 48)
     (images "pop-0.png")
   )
-)
 
+  (linked-sprites
+    (custom-light
+      (file "images/objects/lightmap_light/lightmap_light-medium.sprite")
+      (action "default")
+      (color 1 0.5 0.2)
+    )
+  )
+)

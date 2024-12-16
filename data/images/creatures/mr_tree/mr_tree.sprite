@@ -52,4 +52,10 @@
     (name "iced-right")
     (mirror-action "iced-left")
   )
+
+  (linked-sprites
+    (leaf
+      (file "images/particles/leaf.sprite")
+    )
+  )
 )

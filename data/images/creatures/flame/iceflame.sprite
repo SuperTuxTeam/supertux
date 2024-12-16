@@ -10,5 +10,15 @@
   (images "iceflame-fade-0.png"
           "iceflame-fade-1.png"
           "iceflame-fade-2.png"))
+
+  (linked-sprites
+    (custom-light
+      (file "images/objects/lightmap_light/lightmap_light-small.sprite")
+      (color 0 0.13 0.18)
+    )
+    (smoke
+      (file "images/particles/smoke.sprite")
+    )
+  )
 )
 
