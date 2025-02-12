@@ -61,11 +61,13 @@ protected:
   Physic m_physic;
   bool m_on_ground;
   bool m_on_ice;
+  bool m_at_ceiling;
   Vector m_last_movement;
   std::string m_on_grab_script;
   std::string m_on_ungrab_script;
   bool m_running_grab_script;
   bool m_running_ungrab_script;
+  float m_last_sector_gravity;
 
 private:
   Rock(const Rock&) = delete;
